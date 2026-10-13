@@ -1,0 +1,9 @@
+# Segredos e configurações locais
+.env
+
+# Ambiente virtual do Python
+.venv/
+
+# Arquivos gerados pelo Python
+__pycache__/
+*.pyc
