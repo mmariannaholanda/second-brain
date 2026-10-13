@@ -12,7 +12,7 @@ cursor = conexao.cursor()  # cursor é um objeto do Python que permite executar 
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS disciplinas (
         id INTEGER PRIMARY KEY,
-        nome TEXT NOT NULL
+        nome TEXT NOT NULL UNIQUE
     )
 """)
 # aqui em cima cria 2 colunas, a id e o nome
@@ -20,7 +20,7 @@ cursor.execute("""
 
 
 # insert add uma linha
-cursor.execute("INSERT INTO disciplinas (nome) VALUES (?)", ("Física",))
+cursor.execute("INSERT OR IGNORE INTO disciplinas (nome) VALUES (?)", ("Física",))
 conexao.commit()
 
 for linha in cursor.execute("SELECT id, nome FROM disciplinas"):

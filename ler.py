@@ -1,3 +1,5 @@
+#
+
 
 #                          for read
 with open("disciplinas.txt", "r", encoding="utf-8") as arquivo:
