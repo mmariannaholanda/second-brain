@@ -1,3 +1,10 @@
+# Guarda um PDF no projeto pela linha de comando.
+# Uso: python adicionar.py "caminho.pdf" "Disciplina"
+# Copia o arquivo para a pasta uploads/.
+# Lê: disciplinas (para achar o id).
+# Escreve: materiais (tipo "arquivo", enviar_para_ia fica 0).
+# Rodar duas vezes cria o material duas vezes.
+
 import shutil # manipular arquivos e pastas, como copiar, mover e excluir arquivos
 import sqlite3 # criar e acessar bancos de dados SQLite, como o secondbrain.db
 import sys # acessar informações e recursos do Python, como argumentos passados ao executar o programa
@@ -7,13 +14,13 @@ from pathlib import Path # trabalhar com caminhos de arquivos e pastas de forma 
 
 # python disponibiliza os argumentos em uma lista chamada de sys.argv
 # e a psoicao é dada na hora em que o arquivo é chamado pela ordem em que os arg aparecem
-origem = Path(sys.argv[1])          # arquivo que você quer guardar
+origem = Path(sys.argv[1])          # pega o caminho do arq informado e guarda na variavel origem
 disciplina = sys.argv[2]            # nome da disciplina
 
 pasta = Path("uploads")  # path pega o caminho da pasta uploads
 pasta.mkdir(exist_ok=True) # mkdir cria a pasta no computador
 destino = pasta / origem.name
-shutil.copy(origem, destino)
+shutil.copy(origem, destino)  # shutil.copy() serve para copiar um arquivo de um lugar para outro no computador
 
 conexao = sqlite3.connect("secondbrain.db")
 conexao.execute("PRAGMA foreign_keys = ON")

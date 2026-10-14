@@ -16,6 +16,13 @@ conexao = sqlite3.connect("secondbrain.db")
 conexao.execute("PRAGMA foreign_keys = ON")
 cursor = conexao.cursor()
 
+
+
+
+
+
+
+
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS paginas (
         id INTEGER PRIMARY KEY,

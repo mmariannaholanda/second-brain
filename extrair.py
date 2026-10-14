@@ -16,7 +16,7 @@ print("Páginas:", len(leitor.pages))
 for numero, pagina in enumerate(leitor.pages, start=1):
     texto = pagina.extract_text() or ""
     # or "" evita erro quando a página não tem texto
-    print(f"--- página {numero} ({len(texto)} caracteres) ---")
+    print(f"- página {numero} ({len(texto)} caracteres). ")
 
     limpo = " ".join(texto.split())
     # texto.split() quebra o texto em palavras,

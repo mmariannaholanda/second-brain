@@ -1,11 +1,22 @@
-# Esse código cria um banco de dados para organizar disciplinas,
-# anotações e arquivos, permitindo selecionar quais materiais serão enviados para uma IA
+# Cria o banco e as tabelas base.
+# Cria: disciplinas (id, nome único).
+# Cria: materiais (disciplina_id, tipo, titulo, caminho_arquivo, texto, enviar_para_ia).
+# Insere a disciplina "Física" (ignora se já existir).
+# Insere 2 materiais de teste. Cada execução repete esses 2.
+# Lê: materiais marcados para a IA (enviar_para_ia = 1).
+
 
 import sqlite3
 
 conexao = sqlite3.connect("secondbrain.db")
 conexao.execute("PRAGMA foreign_keys = ON")  # PRAGMA foreign_keys = ON	Ativa a verificação das chaves estrangeiras - id
 cursor = conexao.cursor() # conexao.cursor()	Cria o cursor, usado para executar comandos SQL
+
+
+
+
+
+# cursor.execute = para mandar uma instrução para o banco de dados executar
 
 
 # cria a tabela 1: disciplinas
@@ -34,16 +45,12 @@ cursor.execute("""
 # DEFAULT 0: define 0 automaticamente se nenhum valor for informado
 
 
+
+
+
 # cadastro da disciplina
 cursor.execute("INSERT OR IGNORE INTO disciplinas (nome) VALUES (?)", ("Física",))
 conexao.commit()
-
-
-# busca do ID da disciplina
-cursor.execute("SELECT id FROM disciplinas WHERE nome = ?", ("Física",))
-disc_id = cursor.fetchone()[0]
-# cursor.fetchone()[0] serve para pegar o primeiro resultado de uma consulta ao banco de dados
-
 
 # cadastro dos materiais
 cursor.execute(
@@ -55,12 +62,29 @@ cursor.execute(
 
 
 
+
+
+
+# busca do ID da disciplina
+cursor.execute("SELECT id FROM disciplinas WHERE nome = ?", ("Física",))
+disc_id = cursor.fetchone()[0]
+# cursor.fetchone()[0] serve para pegar o primeiro resultado de uma consulta ao banco de dados
+
+
+
+
+
 # cadastro 2- indica que serao arquivos pdf
 cursor.execute(
     "INSERT INTO materiais (disciplina_id, tipo, titulo, caminho_arquivo, enviar_para_ia) VALUES (?, ?, ?, ?, ?)",
     (disc_id, "arquivo", "Slide aula 3", "uploads/s3.pdf", 1),
 )
 conexao.commit()
+
+
+
+
+
 
 
 # mostrar os materiais selecionados para a IA

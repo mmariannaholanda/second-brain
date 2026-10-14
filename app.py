@@ -16,6 +16,10 @@ conexao = sqlite3.connect("secondbrain.db")
 
 
 
+# Implementar: nao poder carregar o mesmo pdf mais de uma vez, eu tbm n entendi pq ficar varios marcados dizendo 
+# que é pra enviar tudo, sendo q a ia n vai resumir tudo de uma vez, e outra é que eu n consigo abrir o arquivo ao tocar no nome
+# outra é que
+
 
 disciplinas = conexao.execute(
     "SELECT id, nome FROM disciplinas ORDER BY nome"
@@ -82,7 +86,7 @@ materiais = conexao.execute(
 
 for id_, titulo, tipo, marcado in materiais:
     novo = st.checkbox(                           # [Streamlit] caixinha que dá para marcarr
-        f"{titulo} ({tipo}): enviar para a IA",
+        f"{titulo} ({tipo})",
         value=bool(marcado),                      # começa como está no banco
         key=f"m{id_}",                            # nome único de cada caixinha
     )
