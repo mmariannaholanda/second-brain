@@ -11,3 +11,6 @@ __pycache__/
 # Dados locais (banco e arquivos de teste)
 *.db
 disciplinas.txt
+
+
+uploads/
