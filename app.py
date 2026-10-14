@@ -211,3 +211,71 @@ for titulo, texto in notas:
     with st.expander(titulo):
         # st.expander(titulo) → cria uma seção expansível
         st.write(texto)
+
+
+
+
+# Gerador de prompt para outras IAs ------------------
+st.divider()
+st.subheader("Gerar prompt para outra IA")
+
+arquivos = conexao.execute(
+    "SELECT id, titulo FROM materiais WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
+    (ids[escolhida],),
+).fetchall()
+
+
+
+if not arquivos:
+    st.caption("Envie um PDF para poder gerar um prompt.")
+else:
+    titulos = {id_: titulo for id_, titulo in arquivos}          # id -> título
+    material_prompt = st.selectbox(
+        "Material de referência", list(titulos),
+        format_func=lambda i: titulos[i], key="prompt_material",  # mostra o título, guarda o id
+    )
+    # list(titulos) Transforma titulos em uma lista
+    # format_func=lambda i: titulos[i]; Significa: para cada identificador i,
+    # consulte o dicionário titulos e mostre o título correspondente
+
+
+
+
+
+    tema = st.text_input("Tema a estudar", key="prompt_tema")
+    objetivo = st.text_input("Objetivo (ex.: prova, projeto, revisão)", key="prompt_objetivo")
+    # st.text_input() cria um campo de texto no qual o usuário pode digitar alguma coisa
+    
+    nivel = st.selectbox("Nível de profundidade", ["Introdutório", "Intermediário", "Avançado"], key="prompt_nivel")
+    incluir = st.checkbox("Incluir o texto do material no prompt", key="prompt_incluir")
+
+
+
+
+
+
+    if tema.strip():
+        partes = [
+            f"Você é meu professor de {escolhida}.",
+            f"Quero estudar: {tema.strip()}.",
+            f"Objetivo: {objetivo.strip() or 'compreender o conteúdo'}.",
+            f"Nível de profundidade: {nivel.lower()}.",
+            f"Material de referência: {titulos[material_prompt]}.",
+            "",
+            "Como quero que você ensine:",
+            "- Explique os conceitos antes das fórmulas, dizendo de onde cada fórmula vem e por que funciona.",
+            "- Ensine passo a passo, sem pular etapas, conectando cada ideia ao que já foi explicado.",
+            "- Dê exemplos simples e depois exercícios para eu praticar.",
+            "- Baseie-se no material de referência. Não invente informações que ele não contém; se faltar algo, avise.",
+        ]
+        if incluir:
+            try:
+                paginas_prompt = conexao.execute(
+                    "SELECT numero, texto FROM paginas WHERE material_id = ? ORDER BY numero",
+                    (material_prompt,),
+                ).fetchall()
+                partes += ["", "Texto do material (extraído de PDF, fórmulas podem ter erros):"]
+                partes += [f"[Página {n}] {t}" for n, t in paginas_prompt]
+            except sqlite3.OperationalError:
+                st.warning("Este material ainda não tem texto indexado.")
+        st.code("\n".join(partes), language=None)
