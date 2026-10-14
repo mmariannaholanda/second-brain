@@ -77,11 +77,11 @@ materiais = conexao.execute(
 ).fetchall()
 
 
-#materiais = conexao.execute(
- #   "SELECT id, titulo, tipo, enviar_para_ia FROM materiais "
-  #  "WHERE disciplina_id = ? ORDER BY id",
- #   (ids[escolhida],),
-#).fetchall()
+materiais = conexao.execute(
+    "SELECT id, titulo, tipo, enviar_para_ia FROM materiais "
+    "WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
+    (ids[escolhida],),
+).fetchall()
 
 
 for id_, titulo, tipo, marcado in materiais:
@@ -96,3 +96,118 @@ for id_, titulo, tipo, marcado in materiais:
             (int(novo), id_),
         )
         conexao.commit()
+
+
+
+
+
+
+
+
+# foco nos botões -------------------
+st.divider()  # cria uma linha horizontal para separar partes da interface.
+st.subheader("Resumos")
+
+
+# criando a tabela dos resumos
+conexao.execute("""
+    CREATE TABLE IF NOT EXISTS resumos (
+        id INTEGER PRIMARY KEY,
+        material_id INTEGER NOT NULL,
+        pagina_numero INTEGER NOT NULL,
+        texto TEXT NOT NULL,
+        modelo TEXT NOT NULL,
+        UNIQUE (material_id, pagina_numero),
+        FOREIGN KEY (material_id) REFERENCES materiais (id)
+    )
+""")
+
+
+
+marcados = conexao.execute(
+    "SELECT id, titulo FROM materiais "
+    "WHERE disciplina_id = ? AND tipo = 'arquivo' AND enviar_para_ia = 1",
+    (ids[escolhida],),
+).fetchall()
+
+if not marcados:
+    st.caption("Marque um material acima para poder resumir.")
+
+for id_, titulo in marcados:
+    if st.button(f"Resumir: {titulo}", key=f"r{id_}"):  # key=f"r{id_}" → define uma identificação única para o botão, usando o valor de id_
+        paginas = conexao.execute(
+            "SELECT numero, texto FROM paginas WHERE material_id = ? ORDER BY numero",
+            (id_,),
+        ).fetchall()
+        if not paginas:
+            st.warning("Este material não tem páginas indexadas.")
+        else:
+            try:
+                from ia import MODELO, resumir     # só carrega a IA aqui, depois do portão
+                with st.spinner("Resumindo..."):
+                    for numero, texto in paginas:
+                        conexao.execute(
+                            "INSERT OR REPLACE INTO resumos "
+                            "(material_id, pagina_numero, texto, modelo) VALUES (?, ?, ?, ?)",
+                            (id_, numero, resumir(texto), MODELO),
+                        )
+                        conexao.commit()
+            except Exception as erro: # para tratar o erro, 
+                st.error(f"Não foi possível resumir: {erro}")
+
+    salvos = conexao.execute(
+        "SELECT pagina_numero, texto FROM resumos WHERE material_id = ? ORDER BY pagina_numero",
+        (id_,),
+    ).fetchall()
+    if salvos:
+        with st.expander(f"Resumo de {titulo} ({len(salvos)} página(s))"):
+            # st.expander() é um comando da biblioteca Streamlit que cria uma seção que pode
+            # ser aberta ou fechada pelo usuário, como um menu retrátil
+
+            for numero, texto in salvos:
+                st.markdown(f"**Página {numero}**") 
+                # st.markdown() é um comando da biblioteca Streamlit que permite exibir
+                # textos usando formatação Markdown, como títulos, negrito, listas e links
+                st.write(texto)
+
+
+
+
+# Minhas anotações ------------------
+st.divider()
+st.subheader("Caderno")
+
+
+
+with st.form("nova_nota", clear_on_submit=True):      # clear_on_submit limpa os campos após salvar
+    titulo_nota = st.text_input("Título da anotação")
+    texto_nota = st.text_area("Texto")
+    salvar = st.form_submit_button("Salvar anotação")
+
+# st.form() permite agrupar campos e botões em um formulário
+# with → define quais comandos estarão dentro do formulário
+# clear_on_submit=True → limpa os campos do formulário depois que ele é enviado
+
+
+
+if salvar:
+    if titulo_nota.strip():
+        conexao.execute(
+            "INSERT INTO materiais (disciplina_id, tipo, titulo, texto, enviar_para_ia) "
+            "VALUES (?, 'anotacao', ?, ?, 0)",         # 0 fixo: anotação nunca vai para a IA
+            (ids[escolhida], titulo_nota.strip(), texto_nota),
+        )
+        conexao.commit()
+        st.rerun()
+    else:
+        st.warning("Dê um título à anotação.")
+
+notas = conexao.execute(
+    "SELECT titulo, texto FROM materiais WHERE disciplina_id = ? AND tipo = 'anotacao' ORDER BY id DESC",
+    (ids[escolhida],),
+).fetchall()
+
+for titulo, texto in notas:
+    with st.expander(titulo):
+        # st.expander(titulo) → cria uma seção expansível
+        st.write(texto)
