@@ -3,13 +3,15 @@ from pathlib import Path
 import streamlit as st          # [Streamlit] cria a página
 from pypdf import PdfReader
 
+from ia import topicos
+
 
 
 
 st.title("Second Brain")        # [Streamlit] título da página
 
 conexao = sqlite3.connect("secondbrain.db")
-
+conexao.execute("PRAGMA foreign_keys = ON") 
 
 # Layout centralizado, fontes, cores, espaçamento, Menu de três pontinhos
 # e configurações (tema, etc.)   - streamlit automatico
@@ -215,9 +217,17 @@ for titulo, texto in notas:
 
 
 
+
+
+
+
+
+
+
+
 # Gerador de prompt para outras IAs ------------------
 st.divider()
-st.subheader("Gerar prompt para outra IA")
+st.subheader("Gerar prompt para outra IA de resumo e ensino")
 
 arquivos = conexao.execute(
     "SELECT id, titulo FROM materiais WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
@@ -240,17 +250,12 @@ else:
 
 
 
-
-
     tema = st.text_input("Tema a estudar", key="prompt_tema")
     objetivo = st.text_input("Objetivo (ex.: prova, projeto, revisão)", key="prompt_objetivo")
     # st.text_input() cria um campo de texto no qual o usuário pode digitar alguma coisa
     
     nivel = st.selectbox("Nível de profundidade", ["Introdutório", "Intermediário", "Avançado"], key="prompt_nivel")
     incluir = st.checkbox("Incluir o texto do material no prompt", key="prompt_incluir")
-
-
-
 
 
 
@@ -279,3 +284,213 @@ else:
             except sqlite3.OperationalError:
                 st.warning("Este material ainda não tem texto indexado.")
         st.code("\n".join(partes), language=None)
+
+
+
+
+
+
+
+
+
+
+
+# gerar prompt tópicos importantes ------------------
+st.divider()
+st.subheader("Mapa de tópicos")
+
+
+
+# criando a tabela dos tópicos
+conexao.execute("""
+    CREATE TABLE IF NOT EXISTS topicos (
+        id INTEGER PRIMARY KEY,
+        material_id INTEGER NOT NULL UNIQUE,
+        texto TEXT NOT NULL,
+        modelo TEXT NOT NULL,
+        FOREIGN KEY (material_id) REFERENCES materiais (id)
+    )
+""")
+# UNIQUE em material_id → cada material só pode ter um mapa de tópicos
+# se extrair de novo, o INSERT OR REPLACE troca o antigo pelo novo
+
+
+
+if not marcados:
+    st.caption("Marque um material acima para poder extrair os tópicos.")
+
+for id_, titulo in marcados:    # marcados vem da parte dos Resumos: só entram materiais com a caixinha marcada
+    if st.button(f"Extrair tópicos: {titulo}", key=f"t{id_}"):   # key=f"t{id_}" → identificação única, diferente da do botão de resumir (r{id_})
+        paginas_topicos = conexao.execute(
+            "SELECT numero, texto FROM paginas WHERE material_id = ? ORDER BY numero",
+            (id_,),
+        ).fetchall()
+        if not paginas_topicos:
+            st.warning("Este material não tem páginas indexadas.")
+        else:
+            try:
+                from ia import MODELO, topicos     # só carrega a IA aqui, depois do portão
+
+
+                texto_completo = "\n".join(f"[Página {n}] {t}" for n, t in paginas_topicos)
+                # "\n".join(...) junta todas as páginas em um texto só, uma embaixo da outra
+                # o [Página N] na frente é o que permite a IA citar a origem de cada tópico
+
+
+                with st.spinner("Extraindo tópicos..."):
+                    # st.spinner() mostra uma mensagem de carregamento enquanto o bloco abaixo roda
+                    resultado = topicos(texto_completo)
+                conexao.execute(
+                    "INSERT OR REPLACE INTO topicos (material_id, texto, modelo) VALUES (?, ?, ?)",
+                    (id_, resultado, MODELO),
+                )
+                conexao.commit()
+            except Exception as erro:   # para tratar o erro, sem derrubar a página
+                st.error(f"Não foi possível extrair: {erro}")
+
+    salvo = conexao.execute(
+        "SELECT texto FROM topicos WHERE material_id = ?",
+        (id_,),
+    ).fetchone()
+    # fetchone() devolve só a primeira linha do resultado (ou None se não achou nada)
+    if salvo:
+        with st.expander(f"Tópicos de {titulo}"):
+            st.markdown(salvo[0])    # salvo[0] → primeira coluna da linha, que é o texto dos tópicos
+
+
+
+
+
+
+
+
+
+
+
+# Gerar prompt de estudo por tópicos ------------------
+st.divider()
+st.subheader("Gerar prompt de estudo por tópicos")
+
+
+
+com_topicos = conexao.execute(
+    "SELECT m.id, m.titulo, t.texto FROM topicos t "
+    "JOIN materiais m ON m.id = t.material_id "
+    "WHERE m.disciplina_id = ? ORDER BY m.id",
+    (ids[escolhida],),
+).fetchall()
+# JOIN junta duas tabelas: aqui liga cada mapa de tópicos ao material de onde ele veio
+# assim dá para mostrar o título do material junto com o texto dos tópicos
+
+
+
+if not com_topicos:
+    st.caption("Extraia os tópicos de um material marcado para gerar este prompt.")
+else:
+    mapa_topicos = {id_: (titulo, texto) for id_, titulo, texto in com_topicos}    # id -> (título, tópicos)
+    material_topicos = st.selectbox(
+        "Material de referência", list(mapa_topicos),
+        format_func=lambda i: mapa_topicos[i][0], key="topicos_material",  # mostra o título, guarda o id
+    )
+
+
+
+
+
+    objetivo_topicos = st.text_input("Objetivo (ex.: prova, projeto, revisão)", key="topicos_objetivo")
+    nivel_topicos = st.selectbox(
+        "Nível de profundidade",
+        ["Introdutório", "Intermediário", "Avançado", "De acordo com o do PDF"],
+        key="topicos_nivel",
+    )
+
+
+
+
+
+    partes_topicos = [
+        f"Você é meu professor de {escolhida}.",
+        f"Objetivo: {objetivo_topicos.strip() or 'compreender o conteúdo'}.",
+        f"Nível de profundidade: {nivel_topicos.lower()}.",
+        f"Material de referência: {mapa_topicos[material_topicos][0]}.",
+        "",
+        "Abaixo está o mapa de tópicos do material. Ensine cada tópico individualmente, em ordem.",
+        "- Explique os conceitos antes das fórmulas, dizendo de onde cada fórmula vem e por que funciona.",
+        "- Ensine passo a passo, sem pular etapas, e depois dê exemplos e exercícios.",
+        "- Não invente informações que o mapa não contém; se faltar algo, avise.",
+        "",
+        "MAPA DE TÓPICOS:",
+        mapa_topicos[material_topicos][1],
+    ]
+    st.code("\n".join(partes_topicos), language=None)
+    # st.code() mostra o texto dentro de uma caixa, com um botão de copiar no canto
+    # "\n".join(partes_topicos) → junta a lista de linhas em um texto só, com quebra de linha entre elas
+
+
+
+
+
+# busca por palavras-chave ------------------
+st.divider()
+st.subheader("Buscar")
+
+consulta = st.text_input("Buscar nos materiais e anotações", key="busca_texto")
+
+if consulta.strip():
+    try:
+
+
+
+        # tokenize = 'unicode61 remove_diacritics 2'determina como o FTS5 separa e normaliza os termos durante a
+        # indexação e a pesquisa --- unicode61 É o tokenizador que trata o texto como Unicode, permitindo lidar com caracteres especiais e acentos.
+        # remove_diacritics 2 Remove os diacríticos (acentos) dos caracteres, tornando a busca mais flexível.
+        # FTS5 é um recurso do SQLite que permite criar uma tabela virtual otimizada para buscas de texto completo.
+        # Ele cria um índice de palavras que facilita a pesquisa rápida em grandes volumes de texto.
+        conexao.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS busca USING fts5(
+                disciplina UNINDEXED, titulo, texto, tipo UNINDEXED, pagina UNINDEXED,
+                tokenize = 'unicode61 remove_diacritics 2'
+            )
+        """)
+
+
+
+
+        # Reconstrói o índice a partir das tabelas reais (simples; ok para poucos dados)
+        conexao.execute("DELETE FROM busca")
+        conexao.execute("""
+            INSERT INTO busca (disciplina, titulo, texto, tipo, pagina)
+            SELECT d.nome, m.titulo, p.texto, 'arquivo', p.numero
+            FROM paginas p
+            JOIN materiais m ON m.id = p.material_id
+            JOIN disciplinas d ON d.id = m.disciplina_id
+        """)
+        conexao.execute("""
+            INSERT INTO busca (disciplina, titulo, texto, tipo, pagina)
+            SELECT d.nome, m.titulo, COALESCE(m.texto, ''), 'anotacao', NULL
+            FROM materiais m
+            JOIN disciplinas d ON d.id = m.disciplina_id
+            WHERE m.tipo = 'anotacao'
+        """)
+        conexao.commit()
+
+
+
+
+        # Cada palavra vira "palavra"* : entre aspas (evita erro de sintaxe) e com * (aceita prefixo)
+        termos = ['"' + palavra.replace('"', '') + '"*' for palavra in consulta.split()]
+        resultados = conexao.execute(
+            "SELECT disciplina, titulo, tipo, pagina, snippet(busca, 2, '**', '**', '…', 15) "
+            "FROM busca WHERE busca MATCH ? ORDER BY rank LIMIT 20",
+            (" ".join(termos),),
+        ).fetchall()
+    except sqlite3.OperationalError as erro:
+        st.error(f"Não foi possível buscar: {erro}")
+        resultados = []
+
+    if not resultados:
+        st.caption("Nada encontrado.")
+    for disciplina, titulo, tipo, pagina, trecho in resultados:
+        onde = f"página {pagina}" if tipo == "arquivo" else "anotação"
+        st.markdown(f"**{titulo}** · {disciplina} · {onde}")
+        st.markdown(trecho)
