@@ -1,0 +1,9 @@
+# Tema do Second Brain: bege, cinza e tons naturais ------------------
+
+[theme]
+base = "light"                          # base clara; as cores abaixo sobrescrevem as padrão
+
+backgroundColor = "#F5F0E6"             # fundo da página (bege claro)
+secondaryBackgroundColor = "#E8E0D0"    # fundo de caixas, menus e campos (bege mais escuro)
+textColor = "#3D3A35"                   # cor do texto (cinza escuro quente, mais suave que preto)
+primaryColor = "#8B7355"                # cor de destaque: botões, caixinhas marcadas (marrom natural)
