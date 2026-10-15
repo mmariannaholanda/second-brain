@@ -5,7 +5,8 @@
 
 
 
-
+import time
+from google.genai import errors
 import os
 from dotenv import load_dotenv
 from google import genai
@@ -67,19 +68,31 @@ INSTRUCAO2 = (
 
 
 
+def chamar_ia(conteudo):
+    # tenta até 4 vezes quando o Google está sobrecarregado (erro 503)
+    # espera 2, 4 e 8 segundos entre as tentativas → cada espera dobra
+    espera = 2
+    for tentativa in range(4):
+        try:
+            resposta = cliente.models.generate_content(
+                # cliente.models.generate_content() é um método usado para
+                # enviar um conteúdo para um modelo de inteligência artificial generativa e receber uma resposta
+                model=MODELO,
+                contents=conteudo,
+            )
+            return resposta.text
+        except errors.ServerError:      # ServerError → erros 5xx, do lado do Google (o seu código não tem culpa)
+            if tentativa == 3:          # última tentativa: desiste e devolve o erro para a tela mostrar
+                raise
+            time.sleep(espera)
+            espera *= 2
+
+
+
 def resumir(texto):
-    resposta1 = cliente.models.generate_content(
-        # cliente.models.generate_content() é um método usado para
-        # enviar um conteúdo para um modelo de inteligência artificial generativa e receber uma resposta
-        model=MODELO,
-        contents=INSTRUCAO1 + "\n\n- TEXTO DA PÁGINA ---\n" + texto,
-    )
-    return resposta1.text
+    return chamar_ia(INSTRUCAO1 + "\n\n- TEXTO DA PÁGINA -\n" + texto)
+
 
 
 def topicos(texto):
-    resposta2 = cliente.models.generate_content(
-        model=MODELO,
-        contents=INSTRUCAO2 + "\n\n- TEXTO DO MATERIAL (com marcação de página) ---\n" + texto,
-    )
-    return resposta2.text
+    return chamar_ia(INSTRUCAO2 + "\n\n- TEXTO DO MATERIAL -\n" + texto)

@@ -1,11 +1,8 @@
 import sqlite3                  # [Python] banco
 from pathlib import Path
 import streamlit as st          # [Streamlit] cria a página
+
 from pypdf import PdfReader
-
-from ia import topicos
-
-
 
 
 st.title("Second Brain")        # [Streamlit] título da página
@@ -74,7 +71,8 @@ if arquivo is not None and st.button("Guardar e indexar"):
     
 # LISTA DE MATERIAIS COM A CAIXINHA DE ENVIO PARA IA
 materiais = conexao.execute(
-    "SELECT id, titulo, tipo, enviar_para_ia FROM materiais WHERE disciplina_id = ? ORDER BY id",
+    "SELECT id, titulo, tipo, enviar_para_ia FROM materiais "
+    "WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
     (ids[escolhida],),
 ).fetchall()
 
