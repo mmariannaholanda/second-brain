@@ -34,6 +34,7 @@ cursor.execute("""
         caminho_arquivo TEXT,
         texto TEXT,
         enviar_para_ia INTEGER NOT NULL DEFAULT 0,
+        hash_arquivo TEXT,
         FOREIGN KEY (disciplina_id) REFERENCES disciplinas (id)
     )
 """)

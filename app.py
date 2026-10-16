@@ -1,7 +1,7 @@
 import sqlite3                  # [Python] banco
 from pathlib import Path
 import streamlit as st          # [Streamlit] cria a página
-
+import hashlib                # vai dar pra trazer uma impressão digital do conteudo
 from pypdf import PdfReader
 
 
@@ -34,40 +34,133 @@ escolhida = st.selectbox("Disciplina", list(ids))  # [Streamlit] menu de escolha
 
 
 # REGIAO PARA O UPLOAD DO ARQUIVO
+
 arquivo = st.file_uploader("Enviar PDF para esta disciplina", type="pdf")
 
 if arquivo is not None and st.button("Guardar e indexar"):
+
+
+
+    # Calcula a impressão digital do conteúdo do PDF enviado.
+    conteudo = arquivo.getbuffer()
+    hash_novo = hashlib.sha256(conteudo).hexdigest()      # impressão digital do conteúdo do PDF
+
+
+
+
+    # O SQL procura um registro que tenha a mesma disciplina e o mesmo hash
+    ja_existe = conexao.execute(
+        "SELECT titulo FROM materiais WHERE disciplina_id = ? AND hash_arquivo = ?",
+        (ids[escolhida], hash_novo),
+    ).fetchone()
+
+
+    # cria a pasta uploads se não existir e define o caminho do arquivo de destino
     pasta = Path("uploads")
     pasta.mkdir(exist_ok=True)
     destino = pasta / Path(arquivo.name).name     # .name descarta qualquer pasta no nome
-    destino.write_bytes(arquivo.getbuffer())
 
-    cursor = conexao.execute(
-        "INSERT INTO materiais (disciplina_id, tipo, titulo, caminho_arquivo) "
-        "VALUES (?, 'arquivo', ?, ?)",
-        (ids[escolhida], destino.stem, str(destino)),
-    )
-    material_id = cursor.lastrowid
 
-    conexao.execute("""
-        CREATE TABLE IF NOT EXISTS paginas (
-            id INTEGER PRIMARY KEY,
-            material_id INTEGER NOT NULL,
-            numero INTEGER NOT NULL,
-            texto TEXT NOT NULL,
-            UNIQUE (material_id, numero),
-            FOREIGN KEY (material_id) REFERENCES materiais (id)
+
+    # mesmo nome, mesmo conteúdo → não precisa gravar de novo
+    if ja_existe:
+        st.warning(f"Este PDF já foi enviado como '{ja_existe[0]}'.")
+    elif destino.exists():
+        # mesmo nome, conteúdo diferente → gravar por cima apagaria o arquivo do outro material
+        st.warning("Já existe um arquivo com esse nome em uploads, com outro conteúdo. Renomeie o PDF e envie de novo.")
+    else:
+        destino.write_bytes(conteudo)
+
+        cursor = conexao.execute(
+            "INSERT INTO materiais (disciplina_id, tipo, titulo, caminho_arquivo, hash_arquivo) "
+            "VALUES (?, 'arquivo', ?, ?, ?)",
+            (ids[escolhida], destino.stem, str(destino), hash_novo),
         )
-    """)
-    for numero, pagina in enumerate(PdfReader(destino).pages, start=1):
-        texto = " ".join((pagina.extract_text() or "").split())
-        conexao.execute(
-            "INSERT OR REPLACE INTO paginas (material_id, numero, texto) VALUES (?, ?, ?)",
-            (material_id, numero, texto),
-        )
+        material_id = cursor.lastrowid
+
+        conexao.execute("""
+            CREATE TABLE IF NOT EXISTS paginas (
+                id INTEGER PRIMARY KEY,
+                material_id INTEGER NOT NULL,
+                numero INTEGER NOT NULL,
+                texto TEXT NOT NULL,
+                UNIQUE (material_id, numero),
+                FOREIGN KEY (material_id) REFERENCES materiais (id)
+            )
+        """)
+        for numero, pagina in enumerate(PdfReader(destino).pages, start=1):
+            texto = " ".join((pagina.extract_text() or "").split())
+            conexao.execute(
+                "INSERT OR REPLACE INTO paginas (material_id, numero, texto) VALUES (?, ?, ?)",
+                (material_id, numero, texto),
+            )
+        conexao.commit()
+        st.rerun()
+
+
+
+
+# MIGRAÇÃO: coluna hash_arquivo
+
+
+# o código pergunta ao banco quais colunas a tabela tem e só cria a nova se ela não estiver na lista - linha[1] é o nome da coluna, linha[0] é o número da coluna (0, 1, 2, ...)
+colunas = [linha[1] for linha in conexao.execute("PRAGMA table_info(materiais)")]
+if "hash_arquivo" not in colunas:       # só altera a tabela se a coluna ainda não existir
+    conexao.execute("ALTER TABLE materiais ADD COLUMN hash_arquivo TEXT")
     conexao.commit()
-    st.rerun()
-    
+
+
+
+
+# calcula o hash dos PDFs que já estavam guardados
+sem_hash = conexao.execute(
+    "SELECT id, caminho_arquivo FROM materiais "
+    "WHERE tipo = 'arquivo' AND hash_arquivo IS NULL AND caminho_arquivo IS NOT NULL"
+).fetchall()
+
+
+
+# vamos pegar cada PDF que não tem hash, calcular o hash e gravar no banco
+for id_, caminho in sem_hash:
+    if Path(caminho).exists():
+         
+        hash_antigo = hashlib.sha256(Path(caminho).read_bytes()).hexdigest()
+        # Path para representar esse caminho de forma que o Python consiga trabalhar com o arquivo
+        # read_bytes() lê o conteúdo do arquivo como bytes
+        # sha256() calcula um hash criptográfico usando o algoritmo SHA-256 - imopressao digital do conteudo
+        # .hexdigest(): transforma o resultado em texto
+
+        conexao.execute("UPDATE materiais SET hash_arquivo = ? WHERE id = ?", (hash_antigo, id_))
+conexao.commit()
+
+
+
+
+# a trava do banco: não pode haver dois PDFs com o mesmo hash na mesma disciplina
+try:
+    conexao.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_material_hash ON materiais (disciplina_id, hash_arquivo)"
+    )
+    # idx é uma convenção comum para indicar que um objeto do banco de dados é um índice
+    # Ela informa ao SQLite quais colunas devem compor o índice (INDEX) 
+    # Ele verifica se já existe um registro com o mesmo disciplina_id E o mesmo hash_arquivo
+
+    conexao.commit()
+except sqlite3.IntegrityError:
+    st.warning("Já existem PDFs repetidos no banco. Remova as cópias para ativar a trava.")
+
+
+
+
+
+
+
+
+
+
+
+
+
     
 # LISTA DE MATERIAIS COM A CAIXINHA DE ENVIO PARA IA
 materiais = conexao.execute(
@@ -84,11 +177,17 @@ materiais = conexao.execute(
 ).fetchall()
 
 
+
+
+
+
 for id_, titulo, tipo, marcado in materiais:
     novo = st.checkbox(                           # [Streamlit] caixinha que dá para marcarr
-        f"{titulo} ({tipo})",
+        f"Permitir envio à IA: {titulo}",
         value=bool(marcado),                      # começa como está no banco
         key=f"m{id_}",                            # nome único de cada caixinha
+        help="Marcar só libera os botões de resumir e extrair tópicos. Nada é enviado até você clicar em um deles.",
+        # help → mostra um balãozinho de ajuda ao passar o mouse sobre o ponto de interrogação
     )
     if novo != bool(marcado):                     # [Nosso] mudou? grava no banco
         conexao.execute(
@@ -96,9 +195,6 @@ for id_, titulo, tipo, marcado in materiais:
             (int(novo), id_),
         )
         conexao.commit()
-
-
-
 
 
 
@@ -315,7 +411,7 @@ conexao.execute("""
 
 
 if not marcados:
-    st.caption("Marque um material acima para poder extrair os tópicos.")
+    st.caption("Marque \"Permitir envio à IA\" em um material acima para poder resumir.")
 
 for id_, titulo in marcados:    # marcados vem da parte dos Resumos: só entram materiais com a caixinha marcada
     if st.button(f"Extrair tópicos: {titulo}", key=f"t{id_}"):   # key=f"t{id_}" → identificação única, diferente da do botão de resumir (r{id_})
