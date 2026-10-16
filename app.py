@@ -15,93 +15,38 @@ conexao.execute("PRAGMA foreign_keys = ON")
 
 
 
-# Implementar: nao poder carregar o mesmo pdf mais de uma vez, eu tbm n entendi pq ficar varios marcados dizendo 
-# que é pra enviar tudo, sendo q a ia n vai resumir tudo de uma vez, e outra é que eu n consigo abrir o arquivo ao tocar no nome
-# outra é que
-
-
-disciplinas = conexao.execute(
-    "SELECT id, nome FROM disciplinas ORDER BY nome"
-).fetchall()                    # [SQLite] lista de (id, nome)
-if not disciplinas:
-    st.info("Nenhuma disciplina ainda. Rode banco2.py.")
-    st.stop()                   # [Streamlit] para o script aqui
-
-ids = {nome: id_ for id_, nome in disciplinas}   # [Python] dicionário nome -> id
-
-
-escolhida = st.selectbox("Disciplina", list(ids))  # [Streamlit] menu de escolha interativoo
-
-
-# REGIAO PARA O UPLOAD DO ARQUIVO
-
-arquivo = st.file_uploader("Enviar PDF para esta disciplina", type="pdf")
-
-if arquivo is not None and st.button("Guardar e indexar"):
 
 
 
-    # Calcula a impressão digital do conteúdo do PDF enviado.
-    conteudo = arquivo.getbuffer()
-    hash_novo = hashlib.sha256(conteudo).hexdigest()      # impressão digital do conteúdo do PDF
+# cadastro de semestres ===============================================
+conexao.execute("""
+    CREATE TABLE IF NOT EXISTS semestres (
+        id INTEGER PRIMARY KEY,
+        nome_semestre TEXT NOT NULL,
+        UNIQUE (nome_semestre)
+    )
+""")
+
+# add semestre_id a tabela de disciplinas
+colunas = [
+    linha[1]
+    for linha in conexao.execute("PRAGMA table_info(disciplinas)")
+]
+if "semestre_id" not in colunas:
+    conexao.execute("""
+        ALTER TABLE disciplinas
+        ADD COLUMN semestre_id INTEGER REFERENCES semestres(id)
+    """)
+
+conexao.commit()
 
 
 
-
-    # O SQL procura um registro que tenha a mesma disciplina e o mesmo hash
-    ja_existe = conexao.execute(
-        "SELECT titulo FROM materiais WHERE disciplina_id = ? AND hash_arquivo = ?",
-        (ids[escolhida], hash_novo),
-    ).fetchone()
-
-
-    # cria a pasta uploads se não existir e define o caminho do arquivo de destino
-    pasta = Path("uploads")
-    pasta.mkdir(exist_ok=True)
-    destino = pasta / Path(arquivo.name).name     # .name descarta qualquer pasta no nome
-
-
-
-    # mesmo nome, mesmo conteúdo → não precisa gravar de novo
-    if ja_existe:
-        st.warning(f"Este PDF já foi enviado como '{ja_existe[0]}'.")
-    elif destino.exists():
-        # mesmo nome, conteúdo diferente → gravar por cima apagaria o arquivo do outro material
-        st.warning("Já existe um arquivo com esse nome em uploads, com outro conteúdo. Renomeie o PDF e envie de novo.")
-    else:
-        destino.write_bytes(conteudo)
-
-        cursor = conexao.execute(
-            "INSERT INTO materiais (disciplina_id, tipo, titulo, caminho_arquivo, hash_arquivo) "
-            "VALUES (?, 'arquivo', ?, ?, ?)",
-            (ids[escolhida], destino.stem, str(destino), hash_novo),
-        )
-        material_id = cursor.lastrowid
-
-        conexao.execute("""
-            CREATE TABLE IF NOT EXISTS paginas (
-                id INTEGER PRIMARY KEY,
-                material_id INTEGER NOT NULL,
-                numero INTEGER NOT NULL,
-                texto TEXT NOT NULL,
-                UNIQUE (material_id, numero),
-                FOREIGN KEY (material_id) REFERENCES materiais (id)
-            )
-        """)
-        for numero, pagina in enumerate(PdfReader(destino).pages, start=1):
-            texto = " ".join((pagina.extract_text() or "").split())
-            conexao.execute(
-                "INSERT OR REPLACE INTO paginas (material_id, numero, texto) VALUES (?, ?, ?)",
-                (material_id, numero, texto),
-            )
-        conexao.commit()
-        st.rerun()
 
 
 
 
 # MIGRAÇÃO: coluna hash_arquivo
-
 
 # o código pergunta ao banco quais colunas a tabela tem e só cria a nova se ela não estiver na lista - linha[1] é o nome da coluna, linha[0] é o número da coluna (0, 1, 2, ...)
 colunas = [linha[1] for linha in conexao.execute("PRAGMA table_info(materiais)")]
@@ -155,6 +100,212 @@ except sqlite3.IntegrityError:
 
 
 
+# seleção ou cadastro de semestres ====================================
+escolheu_algum_semestre = False
+disciplina_id = None
+
+semestres = conexao.execute(
+    "SELECT id, nome_semestre FROM semestres ORDER BY nome_semestre"
+).fetchall()                         # [SQLite] lista de (id, nome_semestre)
+
+ids_semestres = {
+    nome_semestre: id_
+    for id_, nome_semestre in semestres
+}                                   # [Python] dicionário nome -> id
+
+opcoes_semestres = list(ids_semestres.keys()) + ["+ Criar novo semestre"]
+
+semestre_escolhido = st.selectbox(
+    "Semestre",
+    opcoes_semestres,
+    index=None,
+    placeholder="Selecione um semestre"
+)
+
+if semestre_escolhido == "+ Criar novo semestre":
+
+    novo_semestre = st.text_input("Nome do novo semestre")
+
+    if st.button("Criar semestre"):
+
+        if not novo_semestre.strip():
+            st.warning("Digite um nome válido para o semestre.")
+
+        elif conexao.execute(
+            "SELECT id FROM semestres WHERE nome_semestre = ?",
+            (novo_semestre.strip(),)
+        ).fetchone():
+            st.warning("Esse semestre já está cadastrado.")
+
+        else:
+            conexao.execute(
+                "INSERT INTO semestres (nome_semestre) VALUES (?)",
+                (novo_semestre.strip(),)
+            )
+            conexao.commit()
+            st.success(f"Semestre '{novo_semestre.strip()}' criado.")
+            st.rerun()              # [Streamlit] recarrega a página
+
+elif semestre_escolhido is not None:
+
+    semestre_id = ids_semestres[semestre_escolhido]
+    escolheu_algum_semestre = True
+
+
+# seleção ou cadastro de disciplinas ==================================
+if escolheu_algum_semestre:
+
+    # Busca somente as disciplinas do semestre escolhido
+    disciplinas = conexao.execute(
+        """
+        SELECT id, nome
+        FROM disciplinas
+        WHERE semestre_id = ?
+        ORDER BY nome
+        """,
+        (semestre_id,)
+    ).fetchall()                    # [SQLite] lista de (id, nome)
+
+    ids_disciplinas = {
+        nome: id_
+        for id_, nome in disciplinas
+    }                               # [Python] dicionário nome -> id
+
+    opcoes_disciplinas = (
+        list(ids_disciplinas.keys()) + ["+ Criar nova disciplina"]
+    )
+
+    disciplina_escolhida = st.selectbox(
+        "Disciplina",
+        opcoes_disciplinas,
+        index=None,
+        placeholder="Selecione uma disciplina"
+    )
+
+    if disciplina_escolhida == "+ Criar nova disciplina":
+
+        nova_disciplina = st.text_input("Nome da nova disciplina")
+
+        if st.button("Cadastrar disciplina"):
+
+            if not nova_disciplina.strip():
+                st.warning("Digite um nome válido.")
+
+            elif conexao.execute(
+                """
+                SELECT id
+                FROM disciplinas
+                WHERE nome = ? AND semestre_id = ?
+                """,
+                (nova_disciplina.strip(), semestre_id)
+            ).fetchone():
+                st.warning("Essa disciplina já existe neste semestre.")
+
+            else:
+                conexao.execute(
+                    """
+                    INSERT INTO disciplinas (nome, semestre_id)
+                    VALUES (?, ?)
+                    """,
+                    (nova_disciplina.strip(), semestre_id)
+                )
+                conexao.commit()
+                st.success("Disciplina cadastrada!")
+                st.rerun()          # [Streamlit] atualiza a lista
+
+    elif disciplina_escolhida is not None:
+
+        disciplina_id = ids_disciplinas[disciplina_escolhida]
+        st.write(f"Disciplina selecionada: {disciplina_escolhida}")
+
+
+
+
+
+
+
+
+
+
+
+# Upload do arquivo ====================================================
+
+if escolheu_algum_semestre and disciplina_escolhida is not None and disciplina_escolhida != "+ Criar nova disciplina":
+
+    arquivo = st.file_uploader("Enviar PDF para esta disciplina", type="pdf")
+
+    if arquivo is not None and st.button("Guardar e indexar"):
+
+        # Calcula a impressão digital do conteúdo do PDF enviado.
+        conteudo = arquivo.getbuffer()
+        hash_novo = hashlib.sha256(conteudo).hexdigest()      # impressão digital do conteúdo do PDF
+
+        # O SQL procura um registro que tenha a mesma disciplina e o mesmo hash
+        ja_existe = conexao.execute(
+            "SELECT titulo FROM materiais WHERE disciplina_id = ? AND hash_arquivo = ?",
+            (disciplina_id, hash_novo),
+        ).fetchone()
+
+        # cria a pasta uploads se não existir e define o caminho do arquivo de destino
+        pasta = Path("uploads")
+        pasta.mkdir(exist_ok=True)
+        destino = pasta / Path(arquivo.name).name     # .name descarta qualquer pasta no nome
+
+        # mesmo nome, mesmo conteúdo → não precisa gravar de novo
+        if ja_existe:
+            st.warning(f"Este PDF já foi enviado como '{ja_existe[0]}'.")
+
+        elif destino.exists():
+            # mesmo nome, conteúdo diferente → gravar por cima apagaria o arquivo do outro material
+            st.warning("Já existe um arquivo com esse nome em uploads, com outro conteúdo. Renomeie o PDF e envie de novo.")
+
+        else:
+            destino.write_bytes(conteudo)
+
+            cursor = conexao.execute(
+                "INSERT INTO materiais (disciplina_id, tipo, titulo, caminho_arquivo, hash_arquivo) "
+                "VALUES (?, 'arquivo', ?, ?, ?)",
+                (disciplina_id, destino.stem, str(destino), hash_novo),
+            )
+            material_id = cursor.lastrowid
+
+            conexao.execute("""
+                CREATE TABLE IF NOT EXISTS paginas (
+                    id INTEGER PRIMARY KEY,
+                    material_id INTEGER NOT NULL,
+                    numero INTEGER NOT NULL,
+                    texto TEXT NOT NULL,
+                    UNIQUE (material_id, numero),
+                    FOREIGN KEY (material_id) REFERENCES materiais (id)
+                )
+            """)
+
+            for numero, pagina in enumerate(PdfReader(destino).pages, start=1):
+                texto = " ".join((pagina.extract_text() or "").split())
+                conexao.execute(
+                    "INSERT OR REPLACE INTO paginas (material_id, numero, texto) VALUES (?, ?, ?)",
+                    (material_id, numero, texto),
+                )
+
+            conexao.commit()
+            st.success("PDF guardado e indexado!")
+            st.rerun()
+
+else:
+    st.info("Selecione um semestre e uma disciplina para enviar um PDF.")
+
+
+
+if disciplina_id is None:
+    st.stop()
+
+
+
+
+
+
+
+
 
 
 
@@ -166,14 +317,7 @@ except sqlite3.IntegrityError:
 materiais = conexao.execute(
     "SELECT id, titulo, tipo, enviar_para_ia FROM materiais "
     "WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
-    (ids[escolhida],),
-).fetchall()
-
-
-materiais = conexao.execute(
-    "SELECT id, titulo, tipo, enviar_para_ia FROM materiais "
-    "WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
-    (ids[escolhida],),
+    (disciplina_id,),
 ).fetchall()
 
 
@@ -195,6 +339,18 @@ for id_, titulo, tipo, marcado in materiais:
             (int(novo), id_),
         )
         conexao.commit()
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -223,7 +379,7 @@ conexao.execute("""
 marcados = conexao.execute(
     "SELECT id, titulo FROM materiais "
     "WHERE disciplina_id = ? AND tipo = 'arquivo' AND enviar_para_ia = 1",
-    (ids[escolhida],),
+    (disciplina_id,),
 ).fetchall()
 
 if not marcados:
@@ -269,6 +425,15 @@ for id_, titulo in marcados:
 
 
 
+
+
+
+
+
+
+
+
+
 # Minhas anotações ------------------
 st.divider()
 st.subheader("Caderno")
@@ -291,7 +456,7 @@ if salvar:
         conexao.execute(
             "INSERT INTO materiais (disciplina_id, tipo, titulo, texto, enviar_para_ia) "
             "VALUES (?, 'anotacao', ?, ?, 0)",         # 0 fixo: anotação nunca vai para a IA
-            (ids[escolhida], titulo_nota.strip(), texto_nota),
+            (disciplina_id, titulo_nota.strip(), texto_nota),
         )
         conexao.commit()
         st.rerun()
@@ -300,7 +465,7 @@ if salvar:
 
 notas = conexao.execute(
     "SELECT titulo, texto FROM materiais WHERE disciplina_id = ? AND tipo = 'anotacao' ORDER BY id DESC",
-    (ids[escolhida],),
+    (disciplina_id,),
 ).fetchall()
 
 for titulo, texto in notas:
@@ -325,7 +490,7 @@ st.subheader("Gerar prompt para outra IA de resumo e ensino")
 
 arquivos = conexao.execute(
     "SELECT id, titulo FROM materiais WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
-    (ids[escolhida],),
+    (disciplina_id,),
 ).fetchall()
 
 
@@ -355,7 +520,7 @@ else:
 
     if tema.strip():
         partes = [
-            f"Você é meu professor de {escolhida}.",
+            f"Você é meu professor de {disciplina_escolhida}.",
             f"Quero estudar: {tema.strip()}.",
             f"Objetivo: {objetivo.strip() or 'compreender o conteúdo'}.",
             f"Nível de profundidade: {nivel.lower()}.",
@@ -471,7 +636,7 @@ com_topicos = conexao.execute(
     "SELECT m.id, m.titulo, t.texto FROM topicos t "
     "JOIN materiais m ON m.id = t.material_id "
     "WHERE m.disciplina_id = ? ORDER BY m.id",
-    (ids[escolhida],),
+    (disciplina_id,),
 ).fetchall()
 # JOIN junta duas tabelas: aqui liga cada mapa de tópicos ao material de onde ele veio
 # assim dá para mostrar o título do material junto com o texto dos tópicos
@@ -503,7 +668,7 @@ else:
 
 
     partes_topicos = [
-        f"Você é meu professor de {escolhida}.",
+        f"Você é meu professor de {disciplina_escolhida}.",
         f"Objetivo: {objetivo_topicos.strip() or 'compreender o conteúdo'}.",
         f"Nível de profundidade: {nivel_topicos.lower()}.",
         f"Material de referência: {mapa_topicos[material_topicos][0]}.",
