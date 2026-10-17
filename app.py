@@ -16,6 +16,98 @@ conexao.execute("PRAGMA foreign_keys = ON")
 # e configurações (tema, etc.)   - streamlit automatico
 
 
+# criandp logo a função que move materiais de uma disciplina para outra
+# função para mover materiais entre disciplinas e semestres
+def mover_material(conexao, material_id, nova_disciplina_id):
+    material = conexao.execute(
+        """
+        SELECT tipo, caminho_arquivo
+        FROM materiais
+        WHERE id = ?
+        """,
+        (material_id,),
+    ).fetchone()
+
+    if material is None:
+        return False, "Material não encontrado."
+
+    tipo, caminho_arquivo = material
+
+    caminho_antigo = None
+    novo_caminho = None
+
+    try:
+        # PDFs precisam ser movidos no computador.
+        if tipo == "arquivo" and caminho_arquivo:
+            caminho_antigo = Path(caminho_arquivo)
+
+            if not caminho_antigo.is_file():
+                return False, "O arquivo PDF não foi encontrado no disco."
+
+            pasta_destino = Path("uploads") / str(
+                conexao.execute(
+                    "SELECT semestre_id FROM disciplinas WHERE id = ?",
+                    (nova_disciplina_id,),
+                ).fetchone()[0]
+            ) / str(nova_disciplina_id)
+
+            pasta_destino.mkdir(parents=True, exist_ok=True)
+
+            novo_caminho = pasta_destino / caminho_antigo.name
+
+            if novo_caminho.exists() and novo_caminho.resolve() != caminho_antigo.resolve():
+                return False, "Já existe um arquivo com esse nome na pasta de destino."
+
+            # Atualiza o caminho no banco e move o arquivo.
+            if caminho_antigo.resolve() != novo_caminho.resolve():
+                caminho_antigo.replace(novo_caminho)
+
+            conexao.execute(
+                """
+                UPDATE materiais
+                SET disciplina_id = ?, caminho_arquivo = ?
+                WHERE id = ?
+                """,
+                (nova_disciplina_id, str(novo_caminho), material_id),
+            )
+
+        else:
+            # Anotações não precisam ser movidas no disco.
+            conexao.execute(
+                """
+                UPDATE materiais
+                SET disciplina_id = ?
+                WHERE id = ?
+                """,
+                (nova_disciplina_id, material_id),
+            )
+
+        conexao.commit()
+        return True, "Material movido com sucesso!"
+
+    except Exception as erro:
+        conexao.rollback()
+
+        # Se houve falha depois de mover o PDF, tenta restaurar o arquivo.
+        if (
+            caminho_antigo is not None
+            and novo_caminho is not None
+            and novo_caminho.exists()
+            and not caminho_antigo.exists()
+        ):
+            try:
+                caminho_antigo.parent.mkdir(parents=True, exist_ok=True)
+                novo_caminho.replace(caminho_antigo)
+            except OSError:
+                pass
+
+        return False, f"Não foi possível mover o material: {erro}"
+
+
+
+
+
+    
 
 # criando logo aqui a funcao para excluir materiais 
 def excluir_material(conexao, material_id):
@@ -625,6 +717,11 @@ disciplina_area_estudo = nomes_disciplinas[id_disciplina_area_estudo]
 
 
 
+# controle do material que o usuário escolheu mover
+if "material_para_mover" not in st.session_state:
+    st.session_state["material_para_mover"] = None
+
+
 
 # ===
 st.markdown(f"**{disciplina_area_estudo}**")
@@ -656,50 +753,57 @@ anotacoes_da_disciplina = conexao.execute(
 ).fetchall()
 
 if not anotacoes_da_disciplina:
-    st.caption("Esta pasta ainda não tem anotações.")
+    st.caption("esta pasta ainda não tem anotações :C")
 
 for id_anotacao, titulo_anotacao, texto_anotacao in anotacoes_da_disciplina:
 
-    with st.expander(f"📝{titulo_anotacao}"):
+    col_anotacao, col_menu = st.columns([5, 1])
 
-        st.write(texto_anotacao)
+    with col_anotacao:
+        with st.expander(f"📝{titulo_anotacao}"):
+            st.write(texto_anotacao)
+
+    with col_menu:
+        with st.popover("⋮"):
+
+
+            if st.button(
+                "Mover para outra pasta",
+                key=f"mover_anotacao_{id_anotacao}",
+                use_container_width=True,
+           ):
+                st.session_state["material_para_mover"] = id_anotacao
+                st.rerun()
+
+
+            if st.button(
+                "Excluir anotação",
+                key=f"excluir_{id_anotacao}",
+                use_container_width=True,
+            ):
+                st.session_state["confirmar_exclusao"] = id_anotacao
+                st.rerun()
 
 
 
 if not materiais_da_disciplina:
-    st.caption("Esta pasta ainda não tem arquivos :c")
+    st.caption("esta pasta ainda não tem arquivos foi mal :c ")
 
 for id_, titulo, tipo, marcado, caminho in materiais_da_disciplina:
 
-    col_arquivo, col_ia = st.columns([3, 2])
+    col_arquivo, col_ia, col_menu = st.columns([3, 2, 1])
 
-    # Nome do arquivo e opção de abrir o PDF
     with col_arquivo:
-        caminho_pdf = Path(caminho)
+        st.write(f"📄{titulo}")
 
-        if caminho_pdf.exists():
-            with open(caminho_pdf, "rb") as pdf:
-                st.download_button(
-                    label=f"{titulo}",
-                    data=pdf,
-                    file_name=caminho_pdf.name,
-                    mime="application/pdf",
-                    key=f"abrir_pdf_{id_}",
-                    use_container_width=True,
-                )
-        else:
-            st.write(f"{titulo}")
-            st.caption("Arquivo não encontrado.")
-
-    # Permissão para utilizar o material na IA
     with col_ia:
         novo = st.checkbox(
-            "ir para IA",
+            "Disponível para IA",
             value=bool(marcado),
             key=f"m{id_}",
             help=(
                 "Habilita os recursos de resumo e extração de tópicos. "
-                "O conteúdo não é enviado até você clicar em uma dessas ações."
+                "O conteúdo só será enviado quando você executar uma dessas ações."
             ),
         )
 
@@ -710,8 +814,170 @@ for id_, titulo, tipo, marcado, caminho in materiais_da_disciplina:
             )
             conexao.commit()
 
+    with col_menu:
+        with st.popover("⋮"):
 
 
+            st.caption(titulo)
+            if st.button(
+                 "Mover para outra pasta",
+                key=f"mover_arquivo_{id_}",
+                use_container_width=True,
+            ):
+                st.session_state["material_para_mover"] = id_
+                st.rerun()
+
+            if st.button(
+                "Excluir arquivo",
+                key=f"excluir_{id_}",
+                use_container_width=True,
+            ):
+                st.session_state["confirmar_exclusao"] = id_
+                st.rerun()
+
+
+
+
+# formulário para mover materiais --------- SUPER IMPORTANTE
+material_para_mover = st.session_state.get("material_para_mover")
+
+if material_para_mover is not None:
+
+    st.divider()
+    st.subheader("Mover material")
+
+    semestres_destino = conexao.execute(
+        """
+        SELECT id, nome_semestre
+        FROM semestres
+        ORDER BY nome_semestre
+        """
+    ).fetchall()
+
+    ids_semestres_destino = {
+        nome: id_
+        for id_, nome in semestres_destino
+    }
+
+    semestre_destino_nome = st.selectbox(
+        "Semestre de destino",
+        list(ids_semestres_destino.keys()),
+        index=None,
+        placeholder="Escolha o semestre",
+        key="semestre_destino",
+    )
+
+    disciplina_destino_id = None
+
+    if semestre_destino_nome is not None:
+
+        semestre_destino_id = ids_semestres_destino[semestre_destino_nome]
+
+        disciplinas_destino = conexao.execute(
+            """
+            SELECT id, nome
+            FROM disciplinas
+            WHERE semestre_id = ?
+            ORDER BY nome
+            """,
+            (semestre_destino_id,),
+        ).fetchall()
+
+        ids_disciplinas_destino = {
+            nome: id_
+            for id_, nome in disciplinas_destino
+        }
+
+        disciplina_destino_nome = st.selectbox(
+            "Disciplina de destino",
+            list(ids_disciplinas_destino.keys()),
+            index=None,
+            placeholder="Escolha a disciplina",
+            key="disciplina_destino",
+        )
+
+        if disciplina_destino_nome is not None:
+            disciplina_destino_id = ids_disciplinas_destino[
+                disciplina_destino_nome
+            ]
+
+    confirmar_mover, cancelar_mover = st.columns(2)
+
+    with confirmar_mover:
+        if st.button(
+            "Confirmar movimentação",
+            type="primary",
+            disabled=disciplina_destino_id is None,
+            key="confirmar_mover",
+        ):
+            sucesso, mensagem = mover_material(
+                conexao,
+                material_para_mover,
+                disciplina_destino_id,
+            )
+
+            if sucesso:
+                st.session_state["material_para_mover"] = None
+                st.success(mensagem)
+                st.rerun()
+            else:
+                st.error(mensagem)
+
+    with cancelar_mover:
+        if st.button("Cancelar movimentação", key="cancelar_mover"):
+            st.session_state["material_para_mover"] = None
+            st.rerun()
+
+
+
+
+
+
+# agora aqui vai excluir de uma vez só se o usuário confirmar, para não apagar sem querer
+id_para_excluir = st.session_state.get("confirmar_exclusao")
+
+if id_para_excluir is not None:
+
+    material_confirmacao = conexao.execute(
+        """
+        SELECT titulo, tipo
+        FROM materiais
+        WHERE id = ? AND disciplina_id = ?
+        """,
+        (id_para_excluir, id_disciplina_area_estudo),
+    ).fetchone()
+
+    if material_confirmacao is None:
+        st.session_state.pop("confirmar_exclusao", None)
+
+    else:
+        titulo_excluir, tipo_excluir = material_confirmacao
+
+        st.warning(
+            f"Tem certeza de que deseja excluir '{titulo_excluir}'? "
+            "Essa ação não pode ser desfeita."
+        )
+
+        confirmar, cancelar = st.columns(2)
+
+        with confirmar:
+            if st.button(
+                "Sim, excluir",
+                key="confirmar_exclusao_material",
+                type="primary",
+            ):
+                if excluir_material(conexao, id_para_excluir):
+                    st.session_state.pop("confirmar_exclusao", None)
+                    st.success("Material excluído.")
+                    st.rerun()
+
+        with cancelar:
+            if st.button(
+                "Cancelar",
+                key="cancelar_exclusao_material",
+            ):
+                st.session_state.pop("confirmar_exclusao", None)
+                st.rerun()
 
 
 
@@ -751,7 +1017,7 @@ marcados = conexao.execute(
 ).fetchall()
 
 if not marcados:
-    st.caption("Marque um material acima para poder resumir.")
+    st.caption("marque um material acima para poder resumir com Gemini ;)")
 
 for id_, titulo in marcados:
     if st.button(f"Resumir: {titulo}", key=f"r{id_}"):  # key=f"r{id_}" → define uma identificação única para o botão, usando o valor de id_
@@ -810,7 +1076,7 @@ arquivos = conexao.execute(
 
 
 if not arquivos:
-    st.caption("Envie um PDF para poder gerar um prompt.")
+    st.caption("envie um PDF para poder gerar um prompt ;)")
 else:
     titulos = {id_: titulo for id_, titulo in arquivos}          # id -> título
     material_prompt = st.selectbox(
@@ -890,7 +1156,7 @@ conexao.execute("""
 
 
 if not marcados:
-    st.caption("Marque \"Permitir envio à IA\" em um material acima para poder resumir.")
+    st.caption("marque \"ir para IA\" em um material acima para poder tornar ele disponível para a IA")
 
 for id_, titulo in marcados:    # marcados vem da parte dos Resumos: só entram materiais com a caixinha marcada
     if st.button(f"Extrair tópicos: {titulo}", key=f"t{id_}"):   # key=f"t{id_}" → identificação única, diferente da do botão de resumir (r{id_})
@@ -958,7 +1224,7 @@ com_topicos = conexao.execute(
 
 
 if not com_topicos:
-    st.caption("Extraia os tópicos de um material marcado para gerar este prompt.")
+    st.caption("extraia os tópicos primeiro")
 else:
     mapa_topicos = {id_: (titulo, texto) for id_, titulo, texto in com_topicos}    # id -> (título, tópicos)
     material_topicos = st.selectbox(
@@ -1062,7 +1328,7 @@ if consulta.strip():
         resultados = []
 
     if not resultados:
-        st.caption("Nada encontrado.")
+        st.caption("nada foi encontrado aqui")
     for disciplina, titulo, tipo, pagina, trecho in resultados:
         onde = f"página {pagina}" if tipo == "arquivo" else "anotação"
         st.markdown(f"**{titulo}** · {disciplina} · {onde}")
