@@ -3,6 +3,8 @@ from pathlib import Path
 import streamlit as st          # [Streamlit] cria a página
 import hashlib                # vai dar pra trazer uma impressão digital do conteudo
 from pypdf import PdfReader
+from fpdf import FPDF         # cria o PDF da anotação
+import time                   # time.sleep() faz o programa esperar alguns segundos
 
 
 st.title("Second Brain")        # [Streamlit] título da página
@@ -12,6 +14,77 @@ conexao.execute("PRAGMA foreign_keys = ON")
 
 # Layout centralizado, fontes, cores, espaçamento, Menu de três pontinhos
 # e configurações (tema, etc.)   - streamlit automatico
+
+
+
+# criando logo aqui a funcao para excluir materiais 
+def excluir_material(conexao, material_id):
+    # Busca as informações do material antes de excluí-lo.
+    material = conexao.execute(
+        """
+        SELECT tipo, caminho_arquivo
+        FROM materiais
+        WHERE id = ?
+        """,
+        (material_id,),
+    ).fetchone()
+
+    if material is None:
+        return False
+
+    tipo, caminho_arquivo = material
+
+    try:
+        # Apaga primeiro os dados relacionados ao material para ele morrer mesmo
+        conexao.execute(
+            "DELETE FROM paginas WHERE material_id = ?",
+            (material_id,),
+        )
+
+        conexao.execute(
+            "DELETE FROM resumos WHERE material_id = ?",
+            (material_id,),
+        )
+
+        conexao.execute(
+            "DELETE FROM topicos WHERE material_id = ?",
+            (material_id,),
+        )
+
+        # Depois apaga o próprio material.
+        conexao.execute(
+            "DELETE FROM materiais WHERE id = ?",
+            (material_id,),
+        )
+
+        conexao.commit()
+
+
+
+
+    except Exception:
+        conexao.rollback()
+        raise
+
+    # Depois da exclusão no banco, remove o PDF, se existir
+    if tipo == "arquivo" and caminho_arquivo:
+        caminho = Path(caminho_arquivo)
+
+        try:
+            if caminho.is_file():
+                caminho.unlink()
+        except OSError:
+            st.warning(
+                "o registro foi excluído, mas não consegui remover "
+                "o arquivo PDF do disco, desculpa :/"
+            )
+
+    return True
+
+
+
+
+
 
 
 
@@ -101,59 +174,79 @@ except sqlite3.IntegrityError:
 
 
 # seleção ou cadastro de semestres ====================================
-escolheu_algum_semestre = False
 disciplina_id = None
+disciplina_escolhida = None
 
-semestres = conexao.execute(
-    "SELECT id, nome_semestre FROM semestres ORDER BY nome_semestre"
-).fetchall()                         # [SQLite] lista de (id, nome_semestre)
+def selecionar_semestre(conexao, chave="semestre"):
+    semestres = conexao.execute(
+        "SELECT id, nome_semestre FROM semestres ORDER BY nome_semestre"
+    ).fetchall()                         # [SQLite] lista de (id, nome_semestre)
 
-ids_semestres = {
-    nome_semestre: id_
-    for id_, nome_semestre in semestres
-}                                   # [Python] dicionário nome -> id
+    ids_semestres = {
+        nome_semestre: id_
+        for id_, nome_semestre in semestres
+    }                                   # [Python] dicionário nome -> id
 
-opcoes_semestres = list(ids_semestres.keys()) + ["+ Criar novo semestre"]
+    opcoes_semestres = list(ids_semestres.keys()) + ["+ Criar novo semestre"]
 
-semestre_escolhido = st.selectbox(
-    "Semestre",
-    opcoes_semestres,
-    index=None,
-    placeholder="Selecione um semestre"
-)
+    semestre_escolhido = st.selectbox(
+        "Semestre",
+        opcoes_semestres,
+        index=None,
+        placeholder="Selecione um semestre",
+        key=f"{chave}_select"
+    )
 
-if semestre_escolhido == "+ Criar novo semestre":
+    if semestre_escolhido == "+ Criar novo semestre":
 
-    novo_semestre = st.text_input("Nome do novo semestre")
+        novo_semestre = st.text_input(
+            "Nome do novo semestre",
+            key=f"{chave}_novo"
+        )
 
-    if st.button("Criar semestre"):
+        if st.button("Criar semestre", key=f"{chave}_criar"):
 
-        if not novo_semestre.strip():
-            st.warning("Digite um nome válido para o semestre.")
+            if not novo_semestre.strip():
+                st.warning("Digite um nome válido para o semestre.")
 
-        elif conexao.execute(
-            "SELECT id FROM semestres WHERE nome_semestre = ?",
-            (novo_semestre.strip(),)
-        ).fetchone():
-            st.warning("Esse semestre já está cadastrado.")
-
-        else:
-            conexao.execute(
-                "INSERT INTO semestres (nome_semestre) VALUES (?)",
+            elif conexao.execute(
+                "SELECT id FROM semestres WHERE nome_semestre = ?",
                 (novo_semestre.strip(),)
-            )
-            conexao.commit()
-            st.success(f"Semestre '{novo_semestre.strip()}' criado.")
-            st.rerun()              # [Streamlit] recarrega a página
+            ).fetchone():
+                st.warning("Esse semestre já está cadastrado.")
 
-elif semestre_escolhido is not None:
+            else:
+                conexao.execute(
+                    "INSERT INTO semestres (nome_semestre) VALUES (?)",
+                    (novo_semestre.strip(),)
+                )
+                conexao.commit()
 
-    semestre_id = ids_semestres[semestre_escolhido]
-    escolheu_algum_semestre = True
+                st.success(f"Semestre '{novo_semestre.strip()}' criado.")
+                st.rerun()
+
+        return None
+
+    elif semestre_escolhido is not None:
+
+
+        # !!!!!!!!!!!!!!!
+        semestre_id = ids_semestres[semestre_escolhido]
+        return semestre_id
+
+    return None
+
+
+semestre_id = selecionar_semestre(conexao, chave="semestre")
+
+
+
+
+
 
 
 # seleção ou cadastro de disciplinas ==================================
-if escolheu_algum_semestre:
+if semestre_id is not None:
 
     # Busca somente as disciplinas do semestre escolhido
     disciplinas = conexao.execute(
@@ -202,19 +295,24 @@ if escolheu_algum_semestre:
                 st.warning("Essa disciplina já existe neste semestre.")
 
             else:
-                conexao.execute(
-                    """
-                    INSERT INTO disciplinas (nome, semestre_id)
-                    VALUES (?, ?)
-                    """,
-                    (nova_disciplina.strip(), semestre_id)
-                )
-                conexao.commit()
-                st.success("Disciplina cadastrada!")
-                st.rerun()          # [Streamlit] atualiza a lista
+                try:
+                    conexao.execute(
+                        """
+                        INSERT INTO disciplinas (nome, semestre_id)
+                        VALUES (?, ?)
+                        """,
+                        (nova_disciplina.strip(), semestre_id)
+                    )
+                    conexao.commit()
+                    st.success("Disciplina cadastrada!")
+                    st.rerun()          # [Streamlit] atualiza a lista
+                except sqlite3.IntegrityError:
+                    st.warning("Já existe uma disciplina com esse nome em outro semestre. Por enquanto cada nome só pode existir uma vez.")
 
     elif disciplina_escolhida is not None:
 
+
+        # !!!!!!!!!!!!!!
         disciplina_id = ids_disciplinas[disciplina_escolhida]
         st.write(f"Disciplina selecionada: {disciplina_escolhida}")
 
@@ -230,7 +328,7 @@ if escolheu_algum_semestre:
 
 # Upload do arquivo ====================================================
 
-if escolheu_algum_semestre and disciplina_escolhida is not None and disciplina_escolhida != "+ Criar nova disciplina":
+if semestre_id is not None and disciplina_id is not None:
 
     arquivo = st.file_uploader("Enviar PDF para esta disciplina", type="pdf")
 
@@ -246,10 +344,16 @@ if escolheu_algum_semestre and disciplina_escolhida is not None and disciplina_e
             (disciplina_id, hash_novo),
         ).fetchone()
 
-        # cria a pasta uploads se não existir e define o caminho do arquivo de destino
-        pasta = Path("uploads")
-        pasta.mkdir(exist_ok=True)
-        destino = pasta / Path(arquivo.name).name     # .name descarta qualquer pasta no nome
+
+
+
+        # cria as pastas do semestre e da disciplina se não existirem
+        pasta = Path("uploads") / str(semestre_id) / str(disciplina_id)
+        pasta.mkdir(parents=True, exist_ok=True)
+        destino = pasta / Path(arquivo.name).name
+
+
+
 
         # mesmo nome, mesmo conteúdo → não precisa gravar de novo
         if ja_existe:
@@ -296,51 +400,315 @@ else:
 
 
 
-if disciplina_id is None:
+
+
+
+
+# Nova anotação ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+st.divider()
+st.subheader("Nova anotação")
+
+semestre_nota = selecionar_semestre(conexao, chave="nota")
+disciplina_nota = None
+
+if semestre_nota is not None:
+
+    disciplinas_nota = conexao.execute(
+        """
+        SELECT id, nome
+        FROM disciplinas
+        WHERE semestre_id = ?
+        ORDER BY nome
+        """,
+        (semestre_nota,)
+    ).fetchall()
+
+    ids_disciplinas_nota = {
+        nome: id_
+        for id_, nome in disciplinas_nota
+    }
+
+    nome_disciplina_nota = st.selectbox(
+        "Disciplina da anotação",
+        list(ids_disciplinas_nota.keys()),
+        index=None,
+        placeholder="Selecione uma disciplina",
+        key="nota_disciplina"
+    )
+
+    if nome_disciplina_nota is not None:
+        disciplina_nota = ids_disciplinas_nota[nome_disciplina_nota]
+
+
+if disciplina_nota is None:
+    st.info("Escolha o semestre e a disciplina para escrever uma anotação.")
+
+else:
+
+    with st.form("nova_nota", clear_on_submit=True):
+        titulo_nota = st.text_input("Título da anotação")
+        texto_nota = st.text_area("Texto")
+        salvar = st.form_submit_button("Salvar anotação")
+
+    if salvar:
+
+        if not titulo_nota.strip():
+            st.warning("Dê um título à anotação.")
+
+        elif not texto_nota.strip():
+            st.warning("Escreva algum conteúdo para a anotação.")
+
+        else:
+            conexao.execute(
+                """
+                INSERT INTO materiais
+                    (disciplina_id, tipo, titulo, texto, caminho_arquivo, enviar_para_ia)
+                VALUES (?, 'anotacao', ?, ?, NULL, 0)
+                """,
+                (
+                    disciplina_nota,
+                    titulo_nota.strip(),
+                    texto_nota.strip(),
+                ),
+            )
+
+            conexao.commit()
+
+            st.success("Anotação salva!")
+            st.rerun()
+
+
+
+
+
+
+
+
+# Minha área de estudo ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+st.divider()
+st.subheader("Minha área de estudo")
+
+
+
+semestre_area_estudo = selecionar_semestre(conexao, chave="area_estudo")
+
+if semestre_area_estudo is None:
+    st.info("Selecione o semestre atual para ver as pastas das disciplinas.")
     st.stop()
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-    
-# LISTA DE MATERIAIS COM A CAIXINHA DE ENVIO PARA IA
-materiais = conexao.execute(
-    "SELECT id, titulo, tipo, enviar_para_ia FROM materiais "
-    "WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
-    (disciplina_id,),
+disciplinas_do_semestre = conexao.execute(
+    """
+    SELECT id, nome
+    FROM disciplinas
+    WHERE semestre_id = ?
+    ORDER BY nome
+    """,
+    (semestre_area_estudo,)
 ).fetchall()
 
+nomes_disciplinas = {
+    id_: nome
+    for id_, nome in disciplinas_do_semestre
+}                                   # [Python] dicionário id -> nome (o contrário do ids_disciplinas)
 
 
 
+# st.session_state é a memória da página entre um clique e outro
+# o Streamlit roda o arquivo inteiro a cada clique, então uma variável comum seria zerada toda vez
+# aqui guardamos qual pasta está aberta
+if st.session_state.get("pasta_aberta") not in nomes_disciplinas:
+    st.session_state["pasta_aberta"] = None
+# se a pasta guardada não é deste semestre (ou ainda não existe), nenhuma pasta fica aberta
 
 
-for id_, titulo, tipo, marcado in materiais:
-    novo = st.checkbox(                           # [Streamlit] caixinha que dá para marcarr
-        f"Permitir envio à IA: {titulo}",
-        value=bool(marcado),                      # começa como está no banco
-        key=f"m{id_}",                            # nome único de cada caixinha
-        help="Marcar só libera os botões de resumir e extrair tópicos. Nada é enviado até você clicar em um deles.",
-        # help → mostra um balãozinho de ajuda ao passar o mouse sobre o ponto de interrogação
-    )
-    if novo != bool(marcado):                     # [Nosso] mudou? grava no banco
-        conexao.execute(
-            "UPDATE materiais SET enviar_para_ia = ? WHERE id = ?",
-            (int(novo), id_),
+
+def abrir_pasta(id_pasta):
+    st.session_state["pasta_aberta"] = id_pasta
+    st.session_state["criando_disciplina"] = False      # abrir uma pasta fecha o formulário da pasta "+"
+# callback → função que o Streamlit executa NO MOMENTO do clique, antes de rodar o arquivo de novo
+# assim o botão da pasta já aparece destacado na mesma volta
+
+
+
+def abrir_criacao():
+    st.session_state["criando_disciplina"] = True
+    st.session_state["pasta_aberta"] = None             # nenhuma pasta fica aberta enquanto cadastra
+
+
+
+def fechar_criacao():
+    st.session_state["criando_disciplina"] = False
+
+
+
+colunas_pastas = st.columns(3)      # [Streamlit] divide a linha em 3 colunas lado a lado
+
+for posicao, (id_pasta, nome_pasta) in enumerate(disciplinas_do_semestre):
+    # enumerate dá a posição (0, 1, 2, ...) junto com cada disciplina, que é uma tupla (id, nome)
+    with colunas_pastas[posicao % 3]:
+        # posicao % 3 → resto da divisão por 3: 0, 1, 2, 0, 1, 2... a 4ª pasta volta para a 1ª coluna
+        st.button(
+            f"{nome_pasta}",
+            key=f"pasta_{id_pasta}",
+            on_click=abrir_pasta,
+            args=(id_pasta,),
+            type="primary" if st.session_state["pasta_aberta"] == id_pasta else "secondary",
+            # a pasta aberta fica com a cor de destaque
         )
-        conexao.commit()
+
+with colunas_pastas[len(disciplinas_do_semestre) % 3]:
+    # a pasta "+" entra na próxima posição livre, logo depois da última disciplina
+    # len(lista) → quantas disciplinas existem, então esse número é a posição seguinte
+    st.button(
+        "➕",
+        key="pasta_nova",
+        on_click=abrir_criacao,
+        type="primary" if st.session_state.get("criando_disciplina") else "secondary",
+    )
 
 
+
+if st.session_state.get("criando_disciplina"):
+
+    with st.form("form_nova_disciplina", clear_on_submit=True):
+        # st.form() agrupa o campo e o botão: nada roda até apertar o botão de salvar
+        nome_nova_disciplina = st.text_input("Nome da nova disciplina")
+        salvar_disciplina = st.form_submit_button("Cadastrar disciplina")
+
+    st.button("Cancelar", key="cancelar_criacao", on_click=fechar_criacao)
+
+    if salvar_disciplina:
+
+        if not nome_nova_disciplina.strip():
+            st.warning("Digite um nome válido.")
+
+        elif conexao.execute(
+            """
+            SELECT id
+            FROM disciplinas
+            WHERE nome = ? AND semestre_id = ?
+            """,
+            (nome_nova_disciplina.strip(), semestre_area_estudo)
+        ).fetchone():
+            st.warning("Essa disciplina já existe neste semestre.")
+
+        else:
+            try:
+                cursor = conexao.execute(
+                    """
+                    INSERT INTO disciplinas (nome, semestre_id)
+                    VALUES (?, ?)
+                    """,
+                    (nome_nova_disciplina.strip(), semestre_area_estudo)
+                )
+                conexao.commit()
+                st.session_state["pasta_aberta"] = cursor.lastrowid     # abre a pasta recém-criada
+                st.session_state["criando_disciplina"] = False
+                st.rerun()
+            except sqlite3.IntegrityError:
+                st.warning("Já existe uma disciplina com esse nome em outro semestre. Por enquanto cada nome só pode existir uma vez.")
+
+    st.stop()       # enquanto o formulário está aberto, não mostra os arquivos
+
+
+
+if st.session_state["pasta_aberta"] is None:
+    st.info("Clique em uma pasta para ver os arquivos dela.")
+    st.stop()
+
+
+
+id_disciplina_area_estudo = st.session_state["pasta_aberta"]
+disciplina_area_estudo = nomes_disciplinas[id_disciplina_area_estudo]
+
+
+
+
+# ===
+st.markdown(f"**{disciplina_area_estudo}**")
+
+materiais_da_disciplina = conexao.execute(
+    """
+    SELECT id, titulo, tipo, enviar_para_ia, caminho_arquivo
+    FROM materiais
+    WHERE disciplina_id = ?
+    AND tipo = 'arquivo'
+    ORDER BY titulo
+    """,
+    (id_disciplina_area_estudo,),
+).fetchall()
+
+# adicionando anotações da disciplina 
+
+st.divider()
+
+anotacoes_da_disciplina = conexao.execute(
+    """
+    SELECT id, titulo, texto
+    FROM materiais
+    WHERE disciplina_id = ?
+    AND tipo = 'anotacao'
+    ORDER BY id DESC
+    """,
+    (id_disciplina_area_estudo,),
+).fetchall()
+
+if not anotacoes_da_disciplina:
+    st.caption("Esta pasta ainda não tem anotações.")
+
+for id_anotacao, titulo_anotacao, texto_anotacao in anotacoes_da_disciplina:
+
+    with st.expander(f"📝{titulo_anotacao}"):
+
+        st.write(texto_anotacao)
+
+
+
+if not materiais_da_disciplina:
+    st.caption("Esta pasta ainda não tem arquivos :c")
+
+for id_, titulo, tipo, marcado, caminho in materiais_da_disciplina:
+
+    col_arquivo, col_ia = st.columns([3, 2])
+
+    # Nome do arquivo e opção de abrir o PDF
+    with col_arquivo:
+        caminho_pdf = Path(caminho)
+
+        if caminho_pdf.exists():
+            with open(caminho_pdf, "rb") as pdf:
+                st.download_button(
+                    label=f"{titulo}",
+                    data=pdf,
+                    file_name=caminho_pdf.name,
+                    mime="application/pdf",
+                    key=f"abrir_pdf_{id_}",
+                    use_container_width=True,
+                )
+        else:
+            st.write(f"{titulo}")
+            st.caption("Arquivo não encontrado.")
+
+    # Permissão para utilizar o material na IA
+    with col_ia:
+        novo = st.checkbox(
+            "ir para IA",
+            value=bool(marcado),
+            key=f"m{id_}",
+            help=(
+                "Habilita os recursos de resumo e extração de tópicos. "
+                "O conteúdo não é enviado até você clicar em uma dessas ações."
+            ),
+        )
+
+        if novo != bool(marcado):
+            conexao.execute(
+                "UPDATE materiais SET enviar_para_ia = ? WHERE id = ?",
+                (int(novo), id_),
+            )
+            conexao.commit()
 
 
 
@@ -379,7 +747,7 @@ conexao.execute("""
 marcados = conexao.execute(
     "SELECT id, titulo FROM materiais "
     "WHERE disciplina_id = ? AND tipo = 'arquivo' AND enviar_para_ia = 1",
-    (disciplina_id,),
+    (id_disciplina_area_estudo,),
 ).fetchall()
 
 if not marcados:
@@ -430,67 +798,13 @@ for id_, titulo in marcados:
 
 
 
-
-
-
-
-# Minhas anotações ------------------
-st.divider()
-st.subheader("Caderno")
-
-
-
-with st.form("nova_nota", clear_on_submit=True):      # clear_on_submit limpa os campos após salvar
-    titulo_nota = st.text_input("Título da anotação")
-    texto_nota = st.text_area("Texto")
-    salvar = st.form_submit_button("Salvar anotação")
-
-# st.form() permite agrupar campos e botões em um formulário
-# with → define quais comandos estarão dentro do formulário
-# clear_on_submit=True → limpa os campos do formulário depois que ele é enviado
-
-
-
-if salvar:
-    if titulo_nota.strip():
-        conexao.execute(
-            "INSERT INTO materiais (disciplina_id, tipo, titulo, texto, enviar_para_ia) "
-            "VALUES (?, 'anotacao', ?, ?, 0)",         # 0 fixo: anotação nunca vai para a IA
-            (disciplina_id, titulo_nota.strip(), texto_nota),
-        )
-        conexao.commit()
-        st.rerun()
-    else:
-        st.warning("Dê um título à anotação.")
-
-notas = conexao.execute(
-    "SELECT titulo, texto FROM materiais WHERE disciplina_id = ? AND tipo = 'anotacao' ORDER BY id DESC",
-    (disciplina_id,),
-).fetchall()
-
-for titulo, texto in notas:
-    with st.expander(titulo):
-        # st.expander(titulo) → cria uma seção expansível
-        st.write(texto)
-
-
-
-
-
-
-
-
-
-
-
-
 # Gerador de prompt para outras IAs ------------------
 st.divider()
 st.subheader("Gerar prompt para outra IA de resumo e ensino")
 
 arquivos = conexao.execute(
     "SELECT id, titulo FROM materiais WHERE disciplina_id = ? AND tipo = 'arquivo' ORDER BY id",
-    (disciplina_id,),
+    (id_disciplina_area_estudo,),
 ).fetchall()
 
 
@@ -520,7 +834,7 @@ else:
 
     if tema.strip():
         partes = [
-            f"Você é meu professor de {disciplina_escolhida}.",
+            f"Você é meu professor de {disciplina_area_estudo}.",
             f"Quero estudar: {tema.strip()}.",
             f"Objetivo: {objetivo.strip() or 'compreender o conteúdo'}.",
             f"Nível de profundidade: {nivel.lower()}.",
@@ -636,7 +950,7 @@ com_topicos = conexao.execute(
     "SELECT m.id, m.titulo, t.texto FROM topicos t "
     "JOIN materiais m ON m.id = t.material_id "
     "WHERE m.disciplina_id = ? ORDER BY m.id",
-    (disciplina_id,),
+    (id_disciplina_area_estudo,),
 ).fetchall()
 # JOIN junta duas tabelas: aqui liga cada mapa de tópicos ao material de onde ele veio
 # assim dá para mostrar o título do material junto com o texto dos tópicos
@@ -668,7 +982,7 @@ else:
 
 
     partes_topicos = [
-        f"Você é meu professor de {disciplina_escolhida}.",
+        f"Você é meu professor de {disciplina_area_estudo}.",
         f"Objetivo: {objetivo_topicos.strip() or 'compreender o conteúdo'}.",
         f"Nível de profundidade: {nivel_topicos.lower()}.",
         f"Material de referência: {mapa_topicos[material_topicos][0]}.",
